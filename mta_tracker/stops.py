@@ -207,6 +207,10 @@ class StopIndex:
             for i in ids:
                 self._complex_of[i] = cx
 
+        self._name_tokens = {sid: normalize(st.name).split() for sid, st in self.stations.items()}
+        self._route_tokens = {sid: {label.lower() for label in self.route_labels(st.routes)}
+                              for sid, st in self.stations.items()}
+
     def route_sort_key(self, route_id: str):
         r = self.routes.get(route_id)
         return (r.sort if r else 999, route_id)
@@ -223,42 +227,77 @@ class StopIndex:
     def complex_for(self, station_id: str) -> Complex | None:
         return self._complex_of.get(station_id)
 
+    def complex_label(self, cx: Complex) -> str:
+        """The complex name plus any differently-named member stations."""
+        return " / ".join(dict.fromkeys([cx.name] + [self.station_name(s) for s in cx.station_ids]))
+
     def search(self, query: str, limit: int = 20) -> list[Complex]:
-        """Find complexes by station ID (e.g. "127", "127N") or by (partial) name."""
+        """Rank complexes against a station ID (e.g. "127", "127N") or a fuzzy name query.
+
+        Every query word must match a word of the station name, scored from best
+        to worst: exact, prefix, subsequence ("tmes" -> "times"), then typo-level
+        similarity ("centrl" -> "central"). Words after the first may also name a
+        line served there, so "86 st q" narrows to the Q's 86 St.
+        """
         raw = query.strip().upper()
         for candidate in (raw, raw[:-1] if raw[-1:] in ("N", "S") else None):
             if candidate and candidate in self._complex_of:
                 return [self._complex_of[candidate]]
 
-        q = normalize(query)
-        q_tokens = q.split()
+        q_tokens = normalize(query).split()
         if not q_tokens:
             return []
 
-        scores: dict[str, tuple[int, Complex]] = {}
-
-        def consider(cx: Complex, score: int) -> None:
-            if cx.id not in scores or score < scores[cx.id][0]:
-                scores[cx.id] = (score, cx)
-
-        def token_matches(qt: str, tokens: list[str]) -> bool:
-            # Numbers must match exactly ("1" shouldn't hit "103 St"); words may be prefixes.
-            return qt in tokens if qt.isdigit() else any(t.startswith(qt) for t in tokens)
-
+        best: dict[str, tuple[float, Complex]] = {}
         for st in self.stations.values():
-            name = normalize(st.name)
-            tokens = name.split()
-            if all(token_matches(qt, tokens) for qt in q_tokens):
-                score = 0 if name == q else 1 if all(qt in tokens for qt in q_tokens) else 2
-                consider(self._complex_of[st.id], score)
+            score = _match_score(q_tokens, self._name_tokens[st.id], self._route_tokens[st.id])
+            if score is None:
+                continue
+            cx = self._complex_of[st.id]
+            if cx.id not in best or score < best[cx.id][0]:
+                best[cx.id] = (score, cx)
 
-        if not scores:
-            by_name: dict[str, list[Station]] = {}
-            for st in self.stations.values():
-                by_name.setdefault(normalize(st.name), []).append(st)
-            for match in difflib.get_close_matches(q, list(by_name), n=limit, cutoff=0.6):
-                for st in by_name[match]:
-                    consider(self._complex_of[st.id], 3)
-
-        ranked = sorted(scores.values(), key=lambda sc: (sc[0], sc[1].name, sc[1].id))
+        ranked = sorted(best.values(), key=lambda sc: (sc[0], sc[1].name, sc[1].id))
         return [cx for _, cx in ranked[:limit]]
+
+
+def _is_subsequence(needle: str, haystack: str) -> bool:
+    it = iter(haystack)
+    return all(ch in it for ch in needle)
+
+
+def _token_score(qt: str, tokens: list[str]) -> float | None:
+    """Lower is better; None if `qt` matches none of `tokens`."""
+    best = None
+    for t in tokens:
+        if t == qt:
+            return 0.0
+        if t.startswith(qt):
+            score = 1.5 if qt.isdigit() else 1.0  # "1" should prefer "1 Av" over "103 St"
+        elif qt.isdigit() or len(qt) < 2:
+            continue
+        elif _is_subsequence(qt, t):
+            score = 2.0
+        elif len(qt) >= 3 and (ratio := difflib.SequenceMatcher(None, qt, t).ratio()) >= 0.75:
+            score = 4.0 - ratio
+        else:
+            continue
+        best = score if best is None else min(best, score)
+    return best
+
+
+def _match_score(q_tokens: list[str], name_tokens: list[str], route_tokens: set[str]) -> float | None:
+    total = 0.0
+    for i, qt in enumerate(q_tokens):
+        score = _token_score(qt, name_tokens)
+        if score is None and i > 0 and qt in route_tokens:
+            score = 0.5
+        if score is None:
+            return None
+        total += score
+    # Prefer names that start with what was typed first.
+    if not name_tokens or not name_tokens[0].startswith(q_tokens[0]):
+        total += 0.5
+    if q_tokens == name_tokens:
+        total -= 1.0
+    return total

@@ -26,3 +26,5 @@ USER_AGENT = "mta-tracker/0.1"
 DEFAULT_REFRESH = 30   # seconds between realtime fetches
 DEFAULT_ROWS = 4       # trains shown per direction
 DEFAULT_WIDTH = 46     # board width in characters
+DEFAULT_PAGE_SECONDS = 8  # how long each page of trains stays up before flipping
+PAGES = 2              # page 1 = soonest trains, page 2 = the ones after them

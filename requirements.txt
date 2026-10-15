@@ -1,4 +1,6 @@
 requests>=2.31
 gtfs-realtime-bindings>=1.0
 protobuf>=4.21
+pillow>=10.0           # LED panel rendering
+RGBMatrixEmulator>=0.20  # LED panel preview on a PC (on a Pi, install the rgbmatrix bindings)
 pytest>=8.0
