@@ -141,28 +141,9 @@ The goal is a wall-mounted board that looks like the MTA's platform countdown cl
 
 **Recommended panel: 128×64**, made from two chained 64×64 modules. At P2.5 it's about 12.6 × 6.3 in, desk-sized; at P3 it's about 15 × 7.5 in, wall-sized. 128×32 is the budget option: a long strip with two trains per direction. Use the same model and pitch for every module in a chain.
 
-### Components to buy
+### Build guide
 
-| Part | Notes |
-| --- | --- |
-| **Raspberry Pi 4 Model B** (2 GB is plenty) | This is the best-supported board for [hzeller/rpi-rgb-led-matrix](https://github.com/hzeller/rpi-rgb-led-matrix). The **Pi 5 isn't supported upstream yet**; it uses Adafruit's [Piomatter](https://learn.adafruit.com/rgb-matrix-panels-with-raspberry-pi-5) library instead, which has a different API. A Pi 3B+ also works. |
-| microSD card (16 GB+) | Raspberry Pi OS Lite (64-bit) |
-| **Adafruit RGB Matrix Bonnet** (#3211) or **Matrix HAT** (#2345) | Level-shifts the Pi's 3.3 V GPIO to the panel and handles panel power. It drives a single chain (`--parallel 1`). |
-| **HUB75 panels**: 2× 64×64 (or 2× 64×32) | They usually come with a 16-pin IDC ribbon and a power pigtail. 64×64 panels need the Bonnet's **"E" address jumper** soldered. |
-| **5 V power supply, 10 A** (for 2 panels) | Budget about 4 A per 64×64 panel at full white. Amber text on black uses far less. Power the Pi from its own USB-C supply, or from the Bonnet/HAT if Adafruit's guide says it back-feeds the Pi. |
-| Extra IDC ribbon, if not included | One per link in the chain (Pi → panel 1 → panel 2) |
-| Soldering iron | For the E jumper, and the optional **GPIO4↔GPIO18 jumper**. That jumper enables hardware PWM (`--gpio-mapping adafruit-hat-pwm`) and removes flicker. |
-| Optional: smoked/tinted acrylic + frame | A dark diffuser in front makes the panel look like a real countdown clock and hides the LED grid. |
-
-### Pi setup
-
-1. Flash Raspberry Pi OS Lite. Enable SSH and Wi-Fi in Raspberry Pi Imager.
-2. Disable onboard audio (it conflicts with the panel's timing): set `dtparam=audio=off` in `/boot/firmware/config.txt`. Optionally add `isolcpus=3` to `cmdline.txt` to give the refresh loop a dedicated core.
-3. Build and install the Python bindings for `rpi-rgb-led-matrix` (`make build-python`). Test the wiring with the library's demo first:
-   `sudo ./demo -D0 --led-rows=64 --led-cols=64 --led-chain=2 --led-gpio-mapping=adafruit-hat --led-slowdown-gpio=4`
-4. Install this project's requirements, then run `sudo python -m mta_tracker --led hardware`, with SSH for the search screen. You can also start it with a station: `sudo python -m mta_tracker --led hardware 127 --gpio-slowdown 4`. When stdout isn't a terminal (as under systemd), only the panel is drawn.
-5. The library needs root for GPIO and drops privileges after start-up. So set `MTA_TRACKER_CACHE` to a directory that stays writable after the drop.
-6. Run it at boot with a `systemd` service.
+**[docs/hardware.md](docs/hardware.md)** is a guided, no-soldering build that teaches the electronics as you go. It covers the parts (Pi 4, Adafruit Triple LED Matrix Bonnet, 2× 64×64 HUB75 panels, a 5 V 10 A supply) and what each one does, the basics of electricity, a power budget, safe wall power, wiring, a measure-before-you-power-on check, Pi setup, running at boot with systemd, and troubleshooting.
 
 ### Remaining work
 

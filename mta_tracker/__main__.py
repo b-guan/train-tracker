@@ -151,7 +151,7 @@ def run(index: StopIndex, cx: Complex, args: argparse.Namespace,
 
     arrivals, updated_at, error = [], None, None
     next_fetch = next_render = 0.0
-    started = time.time()
+    started = math.floor(time.time())  # renders land on whole seconds, so pages flip on one
     pages = config.PAGES if args.page_seconds > 0 else 1
     try:
         while True:
@@ -168,8 +168,10 @@ def run(index: StopIndex, cx: Complex, args: argparse.Namespace,
             if time.time() >= next_render:  # new content on each second so the clock/ETAs tick
                 now = time.time()
                 page = int((now - started) // args.page_seconds) % pages if pages > 1 else 0
+                elapsed = (now - started) % args.page_seconds if pages > 1 else 0.0
                 board.render(BoardState(cx.name, arrivals, now, updated_at, error, directions,
-                                        page=page, pages=pages))
+                                        page=page, pages=pages, page_elapsed=elapsed,
+                                        page_seconds=args.page_seconds if pages > 1 else 0.0))
                 if args.once:
                     return "quit"
                 next_render = math.floor(time.time()) + 1

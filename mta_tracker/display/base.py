@@ -17,6 +17,8 @@ class BoardState:
     directions: tuple[str, ...] = field(default=("N", "S"))
     page: int = 0                     # which page of trains to show (0 = the soonest)
     pages: int = 1                    # how many pages are being cycled through
+    page_elapsed: float = 0.0         # seconds the current page has been up
+    page_seconds: float = 0.0         # how long each page stays up (0 = not paging)
 
     def _trains(self, direction: str) -> list[Arrival]:
         return [a for a in self.arrivals if a.direction == direction]

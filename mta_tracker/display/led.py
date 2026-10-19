@@ -8,12 +8,12 @@ output (real panel, emulator, PNG) displays.
     128x64, 5x7 font -> 25 columns x 8 rows
     +-------------------------+
     |Times Sq-42 St       1:24|
-    |1 Van Cortlandt Park  2m|   1 = filled circle (2 cells) in the line's color
-    |2 Wakefield-241 St    3m|   express trains get a diamond
-    |N Astoria-Ditmars     5m|
-    |- - - - - - - - - - - - -|   dim dotted rule between directions
-    |Q Coney Island       Now|   "Now" fades in and out
-    |1 South Ferry         9m|
+    |1 Van Cortlandt Park  2m|   1 = filled circle (2 cells) in the line's color; while
+    |2 Wakefield-241 St    3m|   paging, a dim arrival number (1-3, 4-6) leads each row.
+    |N Astoria-Ditmars     5m|   express trains get a diamond
+    |- - - - - -o- - - - - - -|   dim dotted rule between directions; while paging, a
+    |Q Coney Island       Now|   white dot (o) crosses it in time with the page flip
+    |1 South Ferry         9m|   "Now" fades in and out
     |A Far Rockaway       12m|
     +-------------------------+
 """
@@ -42,6 +42,8 @@ COLORS = {
     S.RULE: (60, 60, 60),
 }
 BACKGROUND = (0, 0, 0)
+PAGE_DOT = (255, 255, 255)  # page dot color when no train's line color is known
+PAGE_TRAIL = 8              # pixels of fading trail behind the dot
 
 ETA_WIDTH = 3      # "Now", "9m", "12m"
 BULLET_CELLS = 2   # a route bullet spans two character cells
@@ -104,6 +106,9 @@ class LedBoard:
         self._target: Grid = []
         self._separators: list[int] = []  # grid rows that start a new direction group
         self._has_now = False
+        self._page_seconds = 0.0  # > 0 while some direction has another page to flip to
+        self._page_anchor = 0.0   # clock() reading when the current page went up
+        self._page_colors: list[tuple[int, int, int]] = [PAGE_DOT]  # cycled along the dot's trail
         self.image = Image.new("RGB", (panel.width, panel.height), BACKGROUND)
 
     # -- layout (semantic) -----------------------------------------------------
@@ -116,15 +121,15 @@ class LedBoard:
         row = [c for part in parts for c in part][:self.cols]
         return row + S.cells(" " * (self.cols - len(row)))
 
-    def _arrival_row(self, arrival, now: float) -> list[Cell]:
+    def _arrival_row(self, arrival, now: float, ordinal: str = "") -> list[Cell]:
         route = self.routes.get(arrival.route_id)
         label = (route.label if route else arrival.route_id)[:1]
         bullet = [Cell(label, S.route_style(arrival.route_id))] + \
             S.cells(" " * (BULLET_CELLS - 1), S.route_style(arrival.route_id))
         eta = format_led_eta(arrival.time - now)
-        dest_width = self.cols - BULLET_CELLS - 1 - ETA_WIDTH
+        dest_width = self.cols - len(ordinal) - BULLET_CELLS - 1 - ETA_WIDTH
         dest = short_headsign(arrival.headsign, dest_width).ljust(dest_width)
-        return self._row(bullet, S.cells(dest + " "),
+        return self._row(S.cells(ordinal, S.DIM), bullet, S.cells(dest + " "),
                          S.cells(eta.rjust(ETA_WIDTH), S.NOW if eta == "Now" else S.ETA))
 
     def layout(self, state: BoardState) -> Grid:
@@ -137,20 +142,41 @@ class LedBoard:
         groups = len(state.directions)
         per_group = max(1, (self.rows - len(grid)) // max(1, groups))
         self._separators = []
+        flips = any(state.page_count(d, per_group) > 1 for d in state.directions)
+        self._page_seconds = state.page_seconds if flips else 0.0
+        self._page_colors = self._soonest_colors(
+            [a for d in state.directions for a in state.by_direction(d, per_group)], state.now)
+        # While paging, number trains in arrival order (1-3, then 4-6) so each page is identifiable.
+        ordinal_width = len(str(state.pages * per_group)) if state.pages > 1 else 0
         for i, direction in enumerate(state.directions):
             if len(grid) >= self.rows:
                 break
             if i > 0:
                 self._separators.append(len(grid))
             upcoming = state.by_direction(direction, per_group)
-            group = [self._arrival_row(a, state.now) for a in upcoming]
+            first = state.page_shown(direction, per_group) * per_group + 1
+            group = [self._arrival_row(a, state.now, str(first + n).rjust(ordinal_width) if ordinal_width else "")
+                     for n, a in enumerate(upcoming)]
             if not group:
                 text = "Loading..." if state.updated_at is None and not state.error else "No trains"
-                group = [self._row(S.cells(" " * BULLET_CELLS + text, S.DIM))]
+                group = [self._row(S.cells(" " * (ordinal_width + BULLET_CELLS) + text, S.DIM))]
             group += [self._row([]) for _ in range(per_group - len(group))]
             grid.extend(group[:self.rows - len(grid)])
         grid += [self._row([]) for _ in range(self.rows - len(grid))]
         return grid
+
+    def _soonest_colors(self, shown, now: float) -> list[tuple[int, int, int]]:
+        """Line colors of the shown trains tied for the soonest ETA on the board."""
+        if not shown:
+            return [PAGE_DOT]
+        soonest = min(S.minutes_until(a.time - now) for a in shown)  # ties as the board shows them
+        colors = []
+        for a in shown:
+            route = self.routes.get(a.route_id)
+            color = self._hex(route.color) if route else PAGE_DOT
+            if S.minutes_until(a.time - now) == soonest and color not in colors:
+                colors.append(color)
+        return colors
 
     # -- rasterizing -------------------------------------------------------------
 
@@ -209,7 +235,26 @@ class LedBoard:
             y = self.y0 + r * self.cell_h - 1
             for x in range(self.x0, self.x0 + self.cols * self.cell_w, 2):
                 img.putpixel((x, y), COLORS[S.RULE])
+        if self.paging and self._separators:
+            self._draw_page_dot(img, self.y0 + self._separators[0] * self.cell_h - 1)
         return img
+
+    def _draw_page_dot(self, img: Image.Image, y: int) -> None:
+        """The dot plus a trail that fades linearly into the rule behind it, in the
+        soonest train's line color (cycling through each line when trains tie)."""
+        x = self._page_dot_x()
+        rule = COLORS[S.RULE]
+        colors = self._page_colors
+        for i in range(min(PAGE_TRAIL, x - self.x0) + 1):
+            level = 1 - i / (PAGE_TRAIL + 1)
+            dot = colors[i % len(colors)]
+            img.putpixel((x - i, y), tuple(round(r + (d - r) * level) for r, d in zip(rule, dot)))
+
+    def _page_dot_x(self) -> int:
+        """Left edge when a page goes up, right edge when it's about to flip."""
+        progress = min(1.0, max(0.0, (self.clock() - self._page_anchor) / self._page_seconds))
+        span = self.cols * self.cell_w - 1
+        return self.x0 + round(progress * span)
 
     # -- Display interface ---------------------------------------------------------
 
@@ -218,14 +263,19 @@ class LedBoard:
         return self.pulse and self._has_now
 
     @property
+    def paging(self) -> bool:
+        return self._page_seconds > 0
+
+    @property
     def animating(self) -> bool:
-        return (self.animator is not None and self.animator.animating) or self.pulsing
+        return (self.animator is not None and self.animator.animating) or self.pulsing or self.paging
 
     def _current(self) -> Grid:
         return self.animator.frame() if self.animator else self._target
 
     def render(self, state: BoardState) -> None:
         self._target = self.layout(state)
+        self._page_anchor = self.clock() - state.page_elapsed
         self._has_now = any(c.style == S.NOW for row in self._target for c in row)
         if self.animator:
             self.animator.set_target(self._target)
