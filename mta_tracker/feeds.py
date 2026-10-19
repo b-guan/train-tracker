@@ -35,6 +35,33 @@ def feed_mentions(feed: gtfs_realtime_pb2.FeedMessage, stop_ids: set[str]) -> bo
     )
 
 
+def alerted_routes(feed: dict, now: float) -> frozenset[str]:
+    """Route IDs with an unplanned service alert in effect now (delays, suspensions, reroutes...).
+
+    `feed` is the parsed JSON alerts feed. Planned work comes as "lmm:planned_work:*"
+    entities and is skipped, as are notices that don't affect service.
+    """
+    routes = set()
+    for ent in feed.get("entity", []):
+        if ":planned_work:" in ent.get("id", ""):
+            continue
+        alert = ent.get("alert", {})
+        if alert.get("transit_realtime.mercury_alert", {}).get("alert_type") in config.INFO_ALERT_TYPES:
+            continue
+        periods = alert.get("active_period") or [{}]  # no period = always in effect
+        if not any(p.get("start", 0) <= now < (p.get("end") or float("inf")) for p in periods):
+            continue
+        routes.update(e["route_id"] for e in alert.get("informed_entity", []) if e.get("route_id"))
+    return frozenset(routes)
+
+
+def fetch_alerted_routes(session: requests.Session, now: float, url: str = config.ALERTS_URL,
+                         timeout: float = config.HTTP_TIMEOUT) -> frozenset[str]:
+    resp = session.get(url, timeout=timeout)
+    resp.raise_for_status()
+    return alerted_routes(resp.json(), now)
+
+
 class FeedPoller:
     """Polls the realtime feeds for a set of platform stop IDs (e.g. {"127N", "127S"}).
 

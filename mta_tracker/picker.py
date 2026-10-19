@@ -17,9 +17,12 @@ class StationPicker:
 
     MAX_RESULTS = 50
 
-    def __init__(self, index: StopIndex, query: str = "", color: bool = True):
+    def __init__(self, index: StopIndex, query: str = "", color: bool = True,
+                 title: str = "MTA STATION SEARCH", hint: str = _HINT):
         self.index = index
         self.color = color
+        self.title = title
+        self.hint = hint
         self.query = query
         self._all = sorted(index.complexes, key=lambda c: (c.name, c.id))
         self.results: list[Complex] = []
@@ -120,7 +123,7 @@ class StationPicker:
         rule = " " + "-" * (width - 2)
         cursor = self._style(" ", _REVERSE) if self.color else "_"
         out = [
-            self._style(" MTA STATION SEARCH", _BOLD),
+            self._style(" " + self.title, _BOLD),
             f" Search: {self.query}{cursor}",
             rule,
         ]
@@ -135,19 +138,19 @@ class StationPicker:
         n = len(self.results)
         more = "+" if self.query.strip() and n >= self.MAX_RESULTS else ""
         count = f" {n}{more} station{'s' if n != 1 else ''}"
-        footer = count + _HINT.rjust(width - len(count) - 1) if len(count) + len(_HINT) < width else count
+        footer = count + self.hint.rjust(width - len(count) - 1) if len(count) + len(self.hint) < width else count
         out.append(self._style(footer, _DIM))
         return out
 
 
 def pick_station(index: StopIndex, term: keys.RawTerminal, query: str = "",
-                 color: bool = True) -> tuple[Complex | None, str]:
+                 color: bool = True, **picker_options) -> tuple[Complex | None, str]:
     """Run the search screen until a station is chosen or the user quits.
 
     Returns the chosen complex (None if cancelled) and the final query text,
     so returning to the search later can pick up where it left off.
     """
-    picker = StationPicker(index, query, color)
+    picker = StationPicker(index, query, color, **picker_options)
     while True:
         size = shutil.get_terminal_size()
         lines = picker.lines(size.columns - 1, size.lines)

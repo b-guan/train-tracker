@@ -90,9 +90,9 @@ def test_interactive_search_board_search_quit(index, monkeypatch):
     picks = []
     real_pick = cli.pick_station
 
-    def recording_pick(index, term, query, color):
+    def recording_pick(index, term, query, color, **kw):
         picks.append(query)
-        return real_pick(index, term, query, color=False)
+        return real_pick(index, term, query, color=False, **kw)
 
     monkeypatch.setattr(cli, "pick_station", recording_pick)
     monkeypatch.setattr(cli.keys, "RawTerminal", lambda: _ContextFor(term))
@@ -100,7 +100,7 @@ def test_interactive_search_board_search_quit(index, monkeypatch):
     assert cli.interactive(index, args) == 0
     assert picks == ["", "south"]
     screens = "".join(term.output)
-    assert "SOUTH FERRY" in screens and "[s]earch [q]uit" in screens
+    assert "SOUTH FERRY" in screens and "[s]earch [a]dd [q]uit" in screens
 
 
 class _ContextFor:

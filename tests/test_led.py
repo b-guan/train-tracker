@@ -139,6 +139,28 @@ def test_rasterize_draws_bullets_text_and_separator(index):
     assert img.getpixel((board.x0, 4 * board.cell_h - 1)) == (60, 60, 60)  # dotted rule
 
 
+def test_alert_badge_marks_only_alerted_lines(index):
+    board = LedBoard(PanelConfig("64x64", 2), routes=index.routes, pulse=False)
+    img = board.rasterize(board.layout(state(ARRIVALS, alerted_routes=frozenset({"6"}))))
+    red = (255, 50, 40)
+
+    def right_of_bullet(row):  # the spare pixels between the bullet and the headsign
+        y = board.y0 + row * board.cell_h
+        return [img.getpixel((x, y + dy)) for x in range(board.x0 + 7, board.x0 + 10) for dy in range(3)]
+
+    assert red in right_of_bullet(2)      # 6X express: a "6" alert covers it
+    assert red not in right_of_bullet(1)  # 1 train, no alert
+    y = board.y0 + 2 * board.cell_h
+    assert all(img.getpixel((board.x0 + 6, y + dy)) == (0, 0, 0) for dy in range(3))  # black moat
+
+
+def test_alert_badge_on_small_letter_bullets(index):
+    board = LedBoard(PanelConfig("64x32", 1), routes=index.routes, pulse=False)  # 4x6: no circles
+    img = board.rasterize(board.layout(state(ARRIVALS, alerted_routes=frozenset({"1"}))))
+    x = board.x0 + board.font.width
+    assert img.getpixel((x, board.y0)) == (255, 50, 40)
+
+
 def test_now_pulses_on_the_panel(index):
     clock = FakeClock(0.0)
     board = LedBoard(PanelConfig("64x64", 2), routes=index.routes, clock=clock)

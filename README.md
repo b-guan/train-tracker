@@ -56,6 +56,7 @@ This opens a station search. Start typing and the list narrows as you type. The 
 | Enter | Open the board for the selected station | |
 | Backspace, Ctrl+U, Ctrl+W | Delete a character, the whole query, or the last word | Back to search |
 | `s`, `/`, Esc | | Back to search, with your query kept |
+| `a` | | Add another station; the board rotates through them all |
 | Esc | Quit | |
 | `q`, Ctrl+C | | Quit |
 
@@ -71,6 +72,7 @@ When stdin or stdout isn't a terminal (piped or scripted), or with `--once`, the
 
 | Option | Meaning |
 | --- | --- |
+| `-a QUERY` | Another station to rotate through after the first; repeat for more. Each station shows its pages of trains in turn. |
 | `-d N\|S\|both` | Direction. N is northbound/uptown and S is southbound/downtown, by MTA convention. |
 | `-n ROWS` | Trains shown per direction (default 4) |
 | `-p SECONDS` | The board alternates between two pages: the soonest trains, then the next ones after them. Each page shows for this many seconds (default 8); `0` shows only the soonest. A direction with no second page keeps showing its first. In the terminal, each direction's title shows `1/2` or `2/2`. |
@@ -131,7 +133,7 @@ python -m mta_tracker "times sq" --snapshot board.png   # write one LED-style fr
 - `--emulator-adapter browser|pygame|tkinter|…`
 - `--no-browser`
 
-The panel layout is denser than the terminal's. It has a station and clock header, then up to three trains per direction with a dotted rule between them. It flips between two pages of trains like the terminal does, without a page number. Line bullets are filled circles (diamonds for express trains), and destinations are shortened to fit ("Coney Island-Stillwell Av" → "Coney Island", "34 St-Hudson Yards" → "Hudson Yards"). On panels too small for a header, it shows two trains per direction and draws line letters in the line color.
+The panel layout is denser than the terminal's. It has a station and clock header, then up to three trains per direction with a dotted rule between them. It flips between two pages of trains like the terminal does; while paging, each train is numbered in arrival order (1-3, then 4-6), and a dot in the train's line color crosses the dotted rule in time with the flip. With several stations, it shows each station's pages in turn. Line bullets are filled circles (diamonds for express trains), and destinations are shortened to fit ("Coney Island-Stillwell Av" → "Coney Island", "34 St-Hudson Yards" → "Hudson Yards"). On panels too small for a header, it shows two trains per direction and draws line letters in the line color.
 
 The emulator is [RGBMatrixEmulator](https://pypi.org/project/RGBMatrixEmulator/), a drop-in for the Pi library's Python API. The settings it needs are written to `~/.cache/mta_tracker/emulator/` on each run, so nothing appears in your working directory.
 

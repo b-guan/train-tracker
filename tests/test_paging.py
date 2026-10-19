@@ -88,6 +88,7 @@ class ClockTerminal:
 def test_run_loop_alternates_pages(index, monkeypatch):
     clock = FakeClock()
     monkeypatch.setattr(cli, "time", clock)
+    monkeypatch.setattr(cli.config, "PAGES", 2)
     monkeypatch.setattr("mta_tracker.feeds.FeedPoller.poll", lambda self: [])
     shown = []
 
@@ -105,14 +106,14 @@ def test_run_loop_alternates_pages(index, monkeypatch):
 
     monkeypatch.setattr(cli, "build_board", lambda *a, **k: Recorder())
     args = cli.parse_args(["--page-seconds", "8"])
-    assert cli.run(index, index.complex_for("127"), args, ClockTerminal(clock, 20)) == "quit"
+    assert cli.run(index, [index.complex_for("127")], args, ClockTerminal(clock, 20)) == "quit"
     pages = {t: p for t, p, _ in shown}
     assert pages[0] == 0 and pages[7] == 0 and pages[8] == 1 and pages[15] == 1 and pages[16] == 0
     assert all(n == 2 for _, _, n in shown)
 
     shown.clear()
     args = cli.parse_args(["--page-seconds", "0"])
-    cli.run(index, index.complex_for("127"), args, ClockTerminal(clock, 20))
+    cli.run(index, [index.complex_for("127")], args, ClockTerminal(clock, 20))
     assert {p for _, p, _ in shown} == {0} and {n for _, _, n in shown} == {1}
 
 

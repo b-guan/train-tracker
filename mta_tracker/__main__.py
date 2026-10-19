@@ -7,14 +7,17 @@ import math
 import os
 import sys
 import time
+from typing import NamedTuple, Sequence
 
 from . import config
 from . import terminal as keys
 from .arrivals import get_arrivals, platform_ids
 from .display import AsciiBoard, BoardState, MultiDisplay, SplitFlap
-from .feeds import FeedError, FeedPoller
+from .feeds import FeedError, FeedPoller, fetch_alerted_routes
 from .picker import pick_station
 from .stops import Complex, StopIndex, load_index
+
+log = logging.getLogger(__name__)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -22,6 +25,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("query", nargs="*",
                    help="optional text to pre-fill the station search (or, with --once / no terminal, "
                         "the station name or GTFS stop ID to show)")
+    p.add_argument("-a", "--also", action="append", default=[], metavar="QUERY",
+                   help="another station to rotate through after the first (repeatable); "
+                        "on the board, press 'a' to add one")
     p.add_argument("-d", "--direction", choices=["N", "S", "both"], default="both",
                    help="N = northbound/uptown, S = southbound/downtown (default: both)")
     p.add_argument("-n", "--rows", type=int, default=config.DEFAULT_ROWS, help="trains shown per direction")
@@ -115,6 +121,7 @@ def choose_complex(index: StopIndex, query: str, input_fn=input, out=sys.stdout)
 FRAME_INTERVAL = 1 / 30  # seconds between split-flap animation frames
 BACK_KEYS = {"s", "S", "/", keys.ESC, keys.BACKSPACE}
 QUIT_KEYS = {"q", "Q", keys.CTRL_C}
+ADD_KEYS = {"a", "A"}
 
 
 def build_board(index: StopIndex, args: argparse.Namespace, term: keys.RawTerminal | None,
@@ -129,7 +136,7 @@ def build_board(index: StopIndex, args: argparse.Namespace, term: keys.RawTermin
         displays.append(AsciiBoard(
             index.routes, width=args.width, rows=args.rows, color=color,
             clear=term is not None or (not args.once and sys.stdout.isatty()),
-            hint="[s]earch [q]uit" if term else "", stream=term.stream if term else None,
+            hint="[s]earch [a]dd [q]uit" if term else "", stream=term.stream if term else None,
             animator=SplitFlap() if animate else None, pulse=not args.no_animation))
     if led is not None:
         from .display.led import LedBoard
@@ -138,40 +145,66 @@ def build_board(index: StopIndex, args: argparse.Namespace, term: keys.RawTermin
     return displays[0] if len(displays) == 1 else MultiDisplay(displays)
 
 
-def run(index: StopIndex, cx: Complex, args: argparse.Namespace,
-        term: keys.RawTerminal | None = None, led=None, show_terminal: bool = True) -> str:
-    """Show the live board for `cx`. Returns "search" to go back to the search screen, else "quit".
+class Slot(NamedTuple):
+    station: int         # index into the rotation's stations
+    page: int
+    elapsed: float       # seconds into this page
 
+
+def rotation_slot(t: float, stations: int, pages: int, page_seconds: float) -> Slot:
+    """What's up `t` seconds into the rotation: each station's pages, one station after another."""
+    slot, elapsed = divmod(t, page_seconds)
+    station, page = divmod(int(slot) % (stations * pages), pages)
+    return Slot(station, page, elapsed)
+
+
+def run(index: StopIndex, stations: Sequence[Complex], args: argparse.Namespace,
+        term: keys.RawTerminal | None = None, led=None, show_terminal: bool = True) -> str:
+    """Show the live board, rotating through `stations` (each with its pages of trains).
+
+    Returns "search" to go back to the search screen, "add" to add a station, else "quit".
     With a `term`, key presses are read between redraws; without one it just
     sleeps (non-interactive output, --once). `led` is an open LED output to mirror to.
     """
+    stations = list(stations)
     board = build_board(index, args, term, led, show_terminal)
     directions = ("N", "S") if args.direction == "both" else (args.direction,)
-    poller = FeedPoller(platform_ids(cx.station_ids))
+    poller = FeedPoller(platform_ids(sid for cx in stations for sid in cx.station_ids))
 
-    arrivals, updated_at, error = [], None, None
+    arrivals: list[list] = [[] for _ in stations]
+    updated_at, error = None, None
+    alerted: frozenset[str] = frozenset()
     next_fetch = next_render = 0.0
     started = math.floor(time.time())  # renders land on whole seconds, so pages flip on one
     pages = config.PAGES if args.page_seconds > 0 else 1
+    # Without paging, each station still gets a turn of the default page length.
+    page_seconds = args.page_seconds if args.page_seconds > 0 else config.DEFAULT_PAGE_SECONDS
     try:
         while True:
             if time.time() >= next_fetch:
                 try:
                     feeds = poller.poll()
                     updated_at = time.time()
-                    arrivals = get_arrivals(feeds, cx.station_ids, index.station_name, updated_at)
+                    arrivals = [get_arrivals(feeds, cx.station_ids, index.station_name, updated_at)
+                                for cx in stations]
                     error = None
                 except FeedError as e:
                     error = str(e)
+                try:
+                    alerted = fetch_alerted_routes(poller.session, time.time())
+                except Exception as e:  # alerts are extra: keep the last known ones, don't mark the board stale
+                    log.warning("Alerts feed failed: %s", e)
                 next_fetch = time.time() + args.refresh
 
             if time.time() >= next_render:  # new content on each second so the clock/ETAs tick
                 now = time.time()
-                page = int((now - started) // args.page_seconds) % pages if pages > 1 else 0
-                elapsed = (now - started) % args.page_seconds if pages > 1 else 0.0
-                board.render(BoardState(cx.name, arrivals, now, updated_at, error, directions,
-                                        page=page, pages=pages, page_elapsed=elapsed,
-                                        page_seconds=args.page_seconds if pages > 1 else 0.0))
+                slot = rotation_slot(now - started, len(stations), pages, page_seconds)
+                changes = pages > 1 or len(stations) > 1  # the progress dot times the next change
+                board.render(BoardState(stations[slot.station].name, arrivals[slot.station], now,
+                                        updated_at, error, directions, page=slot.page, pages=pages,
+                                        page_elapsed=slot.elapsed if changes else 0.0,
+                                        page_seconds=page_seconds if changes else 0.0,
+                                        rotating=len(stations) > 1, alerted_routes=alerted))
                 if args.once:
                     return "quit"
                 next_render = math.floor(time.time()) + 1
@@ -185,6 +218,8 @@ def run(index: StopIndex, cx: Complex, args: argparse.Namespace,
                 return "quit"
             if key in BACK_KEYS:
                 return "search"
+            if key in ADD_KEYS:
+                return "add"
             board.tick()
     except KeyboardInterrupt:
         return "quit"
@@ -193,14 +228,48 @@ def run(index: StopIndex, cx: Complex, args: argparse.Namespace,
             board.close()
 
 
+def resolve_stations(index: StopIndex, queries: Sequence[str]) -> list[Complex] | None:
+    """Look up each query (asking when one is ambiguous); None if any can't be resolved."""
+    stations = []
+    for query in queries:
+        cx = choose_complex(index, query)
+        if cx is None:
+            return None
+        if cx not in stations:
+            stations.append(cx)
+    return stations
+
+
 def interactive(index: StopIndex, args: argparse.Namespace, led=None) -> int:
-    """Search screen -> live board -> back to search, until the user quits."""
+    """Search screen -> live board, until the user quits.
+
+    On the board, 's' starts over with a new station and 'a' adds one to the rotation.
+    """
     query = " ".join(args.query)
+    try:
+        extra = resolve_stations(index, args.also)  # --also stations join the first one picked
+    except (KeyboardInterrupt, EOFError):
+        return 130
+    if extra is None:
+        return 1
+    stations: list[Complex] = []
+    action = "search"
     try:
         with keys.RawTerminal() as term:
             while True:
-                cx, query = pick_station(index, term, query, color=not args.no_color)
-                if cx is None or run(index, cx, args, term, led) == "quit":
+                if action == "search":
+                    cx, query = pick_station(index, term, query, color=not args.no_color)
+                    if cx is None:
+                        return 0
+                    stations = [cx] + [s for s in extra if s != cx]
+                    extra = []
+                else:  # add: Esc goes back to the board unchanged
+                    cx, _ = pick_station(index, term, "", color=not args.no_color, title="ADD A STATION",
+                                         hint="Up/Down move  Enter add  Esc back")
+                    if cx is not None and cx not in stations:
+                        stations.append(cx)
+                action = run(index, stations, args, term, led)
+                if action == "quit":
                     return 0
     except KeyboardInterrupt:
         return 0
@@ -213,7 +282,7 @@ def snapshot(index: StopIndex, cx: Complex, args: argparse.Namespace, panel) -> 
     out = PngOutput(args.snapshot, panel, pixel_size=args.pixel_size or panel.true_size_pixel_px())
     args.once = True
     args.no_animation = True  # a still frame: no flaps mid-turn, "Now" at full brightness
-    run(index, cx, args, led=out, show_terminal=False)
+    run(index, [cx], args, led=out, show_terminal=False)
     out.close()
     print(f"Wrote {args.snapshot}: {panel.describe()}")
     return 0
@@ -255,18 +324,18 @@ def main(argv=None) -> int:
 
     try:
         query = " ".join(args.query) or input("Station: ")
-        cx = choose_complex(index, query)
+        stations = resolve_stations(index, [query] + args.also)
     except (KeyboardInterrupt, EOFError):
         return 130
-    if cx is None:
+    if stations is None:
         return 1
 
     if args.snapshot:
-        return snapshot(index, cx, args, panel)
+        return snapshot(index, stations[0], args, panel)
     led = open_led_output(panel, args) if args.led else None
     try:
         # Headless with a panel (e.g. a systemd service): don't fill the log with terminal boards.
-        run(index, cx, args, led=led, show_terminal=led is None or sys.stdout.isatty())
+        run(index, stations, args, led=led, show_terminal=led is None or sys.stdout.isatty())
     finally:
         if led:
             led.close()

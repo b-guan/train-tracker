@@ -10,11 +10,11 @@ output (real panel, emulator, PNG) displays.
     |Times Sq-42 St       1:24|
     |1 Van Cortlandt Park  2m|   1 = filled circle (2 cells) in the line's color; while
     |2 Wakefield-241 St    3m|   paging, a dim arrival number (1-3, 4-6) leads each row.
-    |N Astoria-Ditmars     5m|   express trains get a diamond
-    |- - - - - -o- - - - - - -|   dim dotted rule between directions; while paging, a
-    |Q Coney Island       Now|   white dot (o) crosses it in time with the page flip
-    |1 South Ferry         9m|   "Now" fades in and out
-    |A Far Rockaway       12m|
+    |N Astoria-Ditmars     5m|   express trains get a diamond; a red badge at a bullet's
+    |- - - - - -o- - - - - - -|   top right flags a line with delays or other service alerts
+    |Q Coney Island       Now|   dim dotted rule between directions; while paging, a
+    |1 South Ferry         9m|   white dot (o) crosses it in time with the page flip
+    |A Far Rockaway       12m|   "Now" fades in and out
     +-------------------------+
 """
 from __future__ import annotations
@@ -44,6 +44,7 @@ COLORS = {
 BACKGROUND = (0, 0, 0)
 PAGE_DOT = (255, 255, 255)  # page dot color when no train's line color is known
 PAGE_TRAIL = 8              # pixels of fading trail behind the dot
+BADGE = 2                   # side of the square service-alert badge, in pixels
 
 ETA_WIDTH = 3      # "Now", "9m", "12m"
 BULLET_CELLS = 2   # a route bullet spans two character cells
@@ -106,9 +107,10 @@ class LedBoard:
         self._target: Grid = []
         self._separators: list[int] = []  # grid rows that start a new direction group
         self._has_now = False
-        self._page_seconds = 0.0  # > 0 while some direction has another page to flip to
+        self._page_seconds = 0.0  # > 0 while the screen will change: another page or the next station
         self._page_anchor = 0.0   # clock() reading when the current page went up
         self._page_colors: list[tuple[int, int, int]] = [PAGE_DOT]  # cycled along the dot's trail
+        self._alerted: set[str] = set()  # route IDs whose bullets get an alert badge
         self.image = Image.new("RGB", (panel.width, panel.height), BACKGROUND)
 
     # -- layout (semantic) -----------------------------------------------------
@@ -142,7 +144,8 @@ class LedBoard:
         groups = len(state.directions)
         per_group = max(1, (self.rows - len(grid)) // max(1, groups))
         self._separators = []
-        flips = any(state.page_count(d, per_group) > 1 for d in state.directions)
+        self._alerted = {a.route_id for a in state.arrivals if state.has_alert(a.route_id)}
+        flips = state.rotating or any(state.page_count(d, per_group) > 1 for d in state.directions)
         self._page_seconds = state.page_seconds if flips else 0.0
         self._page_colors = self._soonest_colors(
             [a for d in state.directions for a in state.by_direction(d, per_group)], state.now)
@@ -192,16 +195,21 @@ class LedBoard:
         route = self.routes.get(S.route_of(cell.style))
         fill = self._hex(route.color) if route else COLORS[S.DIM]
         ink = self._hex(route.text_color) if route else BACKGROUND
+        alerted = S.route_of(cell.style) in self._alerted
         d = self.cell_h - 1  # leave the blank pixel row so stacked bullets don't touch
         if d < 7:  # too small for a letter inside a circle: draw the letter in the line color
             self.image.paste(fill, (x, y, x + self.font.width, y + self.font.height), self.font.mask(cell.char))
+            if alerted:
+                self._draw_badge(draw, x + self.font.width, y)
             return
-        cx0 = x + (BULLET_CELLS * self.cell_w - 1 - d) // 2
+        cx0 = x  # left-aligned in its cells: the spare pixels on the right hold the alert badge
         if route and route.express:  # express trains get a diamond, like the real signage
             c = (d - 1) / 2
             draw.polygon([(cx0 + c, y), (cx0 + d - 1, y + c), (cx0 + c, y + d - 1), (cx0, y + c)], fill=fill)
         else:
             draw.ellipse([cx0, y, cx0 + d - 1, y + d - 1], fill=fill)
+        if alerted:  # before the letter, so the moat never clips its strokes
+            self._draw_badge(draw, cx0 + d, y)
         font = self.bullet_font
         mask = font.mask(cell.char)
         ink_box = mask.getbbox()
@@ -210,6 +218,13 @@ class LedBoard:
             gx = cx0 + (d - (right - left)) // 2 - left
             gy = y + (d - (bottom - top)) // 2 - top
             self.image.paste(ink, (gx, gy, gx + font.width, gy + font.height), mask)
+
+    @staticmethod
+    def _draw_badge(draw: ImageDraw.ImageDraw, x: int, y: int) -> None:
+        """A red square with its top left at (x, y), cut out of the bullet with a black
+        moat so it stays distinct even on red, orange and yellow bullets."""
+        draw.rectangle([x - 1, y, x + BADGE, y + BADGE], fill=BACKGROUND)
+        draw.rectangle([x, y, x + BADGE - 1, y + BADGE - 1], fill=COLORS[S.ALERT])
 
     def rasterize(self, grid: Grid) -> Image.Image:
         img = self.image
